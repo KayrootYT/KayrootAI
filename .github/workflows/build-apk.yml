@@ -1,10 +1,9 @@
-
 name: Kayroot Engine Android CI
 
 on:
   push:
-    branches: [main, master]
-    tags: ['v*']
+    branches: [ main, master ]
+    tags: [ 'v*' ]
   pull_request:
   workflow_dispatch:
 
@@ -20,72 +19,46 @@ jobs:
     name: Build, Test and Package APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
-
     env:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
-      GRADLE_OPTS: >-
-        -Dorg.gradle.internal.http.connectionTimeout=120000
-        -Dorg.gradle.internal.http.socketTimeout=120000
-        -Dorg.gradle.internal.repository.max.retries=3
-        -Dorg.gradle.internal.repository.initial.backoff=1000
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Locate Android project
         shell: bash
         run: |
           set -euo pipefail
-
           PROJECT_FILE="$(find . -type f -name settings.gradle.kts \
-            -not -path '*/.git/*' \
-            -not -path '*/build/*' \
-            -not -path '*/_unzipped_project/*' \
-            -print -quit || true)"
-
+            -not -path '*/.git/*' -not -path '*/build/*' \
+            -not -path '*/_unzipped_project/*' -print -quit || true)"
           if [ -z "$PROJECT_FILE" ]; then
             mkdir -p _unzipped_project
             shopt -s nullglob
-
-            ZIP_FILES=(./Kayroot_Engine_v2_4_Fixed.zip ./*.zip)
             SELECTED_ZIP=""
-
-            for ZIP in "${ZIP_FILES[@]}"; do
-              if [ -f "$ZIP" ]; then
-                SELECTED_ZIP="$ZIP"
-                break
-              fi
+            for ZIP in ./Kayroot_Engine_v2_4.zip ./*.zip; do
+              if [ -f "$ZIP" ]; then SELECTED_ZIP="$ZIP"; break; fi
             done
-
             if [ -n "$SELECTED_ZIP" ]; then
               echo "Extracting: $SELECTED_ZIP"
               unzip -oq "$SELECTED_ZIP" -d _unzipped_project
             fi
-
-            PROJECT_FILE="$(find _unzipped_project \
-              -type f -name settings.gradle.kts \
+            PROJECT_FILE="$(find _unzipped_project -type f -name settings.gradle.kts \
               -not -path '*/build/*' -print -quit || true)"
           fi
-
           if [ -z "$PROJECT_FILE" ]; then
-            echo "::error::Android project not found."
+            echo "::error::Android project not found. Put Kayroot_Engine_v2_4.zip in the repo root."
             exit 1
           fi
-
           PROJECT_DIR="$(dirname "$PROJECT_FILE")"
-
           if [ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]; then
             echo "::error::app/build.gradle.kts not found."
             exit 1
           fi
-
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
           echo "Using project: $PROJECT_DIR"
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
@@ -95,76 +68,38 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-
           if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" \
-              -type f -name sdkmanager -print -quit 2>/dev/null || true)"
+            SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -1 || true)
           fi
-
           if [ -z "$SDKMANAGER" ] || [ ! -x "$SDKMANAGER" ]; then
             echo "::error::sdkmanager not found."
             exit 1
           fi
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
-          echo "$(dirname "$SDKMANAGER")" >> "$GITHUB_PATH"
-
-          yes | "$SDKMANAGER" \
-            --sdk_root="$ANDROID_HOME" --licenses >/dev/null || true
-
-          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
-            'platform-tools' \
-            'platforms;android-34' \
-            'build-tools;34.0.0'
-
-      - name: Set up Gradle 8.9
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-          cache-read-only: ${{ github.event_name == 'pull_request' }}
-
-      - name: Require signing key for version releases
-        if: startsWith(github.ref, 'refs/tags/v')
-        env:
-          KS: ${{ secrets.KEYSTORE_BASE64 }}
-          KSP: ${{ secrets.KEYSTORE_PASSWORD }}
-          KA: ${{ secrets.KEY_ALIAS }}
-          KP: ${{ secrets.KEY_PASSWORD }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -z "$KS" ] || [ -z "$KSP" ] || \
-             [ -z "$KA" ] || [ -z "$KP" ]; then
-            echo "::error::Release signing secrets are missing."
-            exit 1
-          fi
 
       - name: Prepare signing configuration
+        shell: bash
         env:
           KS: ${{ secrets.KEYSTORE_BASE64 }}
           KSP: ${{ secrets.KEYSTORE_PASSWORD }}
           KA: ${{ secrets.KEY_ALIAS }}
           KP: ${{ secrets.KEY_PASSWORD }}
-        shell: bash
         run: |
           set -euo pipefail
-
-          if [ -n "$KS" ] || [ -n "$KSP" ] || \
-             [ -n "$KA" ] || [ -n "$KP" ]; then
-
-            if [ -z "$KS" ] || [ -z "$KSP" ] || \
-               [ -z "$KA" ] || [ -z "$KP" ]; then
+          if [ -n "$KS" ] || [ -n "$KSP" ] || [ -n "$KA" ] || [ -n "$KP" ]; then
+            if [ -z "$KS" ] || [ -z "$KSP" ] || [ -z "$KA" ] || [ -z "$KP" ]; then
               echo "::error::Set all four signing secrets."
               exit 1
             fi
-
             KEYSTORE_PATH="$RUNNER_TEMP/kayroot-release.jks"
             printf '%s' "$KS" | base64 --decode > "$KEYSTORE_PATH"
             test -s "$KEYSTORE_PATH"
-
             {
               echo "KEYSTORE_PATH=$KEYSTORE_PATH"
               echo "KEYSTORE_PASSWORD=$KSP"
@@ -173,10 +108,8 @@ jobs:
               echo "APK_NAME=KayrootEngine-v2.4.apk"
               echo "SIGNING_MODE=release"
             } >> "$GITHUB_ENV"
-
           else
             echo "Building debug-signed test APK."
-
             {
               echo "APK_NAME=KayrootEngine-v2.4-debug-signed.apk"
               echo "SIGNING_MODE=debug"
@@ -184,115 +117,48 @@ jobs:
           fi
 
       - name: Run unit tests with dependency retries
-        working-directory: ${{ env.PROJECT_DIR }}
         shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
-
           for attempt in 1 2 3; do
             echo "Unit tests: attempt $attempt/3"
-
-            if gradle :app:testDebugUnitTest \
-              --no-daemon --stacktrace \
-              --max-workers=2 --refresh-dependencies; then
+            if gradle :app:testDebugUnitTest --no-daemon --stacktrace --max-workers=2; then
               exit 0
             fi
-
             if [ "$attempt" -lt 3 ]; then
-              echo "Retrying after dependency/build failure..."
+              echo "Retrying after build failure..."
               sleep 12
             fi
           done
-
           echo "::error::Unit tests failed after 3 attempts."
           exit 1
 
-      - name: Run Android lint with retries
+      - name: Build APK
         working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle :app:assembleRelease --no-daemon --stacktrace --max-workers=2
+
+      - name: Verify and name APK
         shell: bash
         run: |
           set -euo pipefail
-
-          for attempt in 1 2 3; do
-            echo "Android lint: attempt $attempt/3"
-
-            if gradle :app:lintDebug \
-              --no-daemon --stacktrace \
-              --max-workers=2 --refresh-dependencies; then
-              exit 0
-            fi
-
-            if [ "$attempt" -lt 3 ]; then
-              sleep 12
-            fi
-          done
-
-          echo "::error::Android lint failed after 3 attempts."
-          exit 1
-
-      - name: Build release APK with retries
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          for attempt in 1 2 3; do
-            echo "Release build: attempt $attempt/3"
-
-            if gradle :app:assembleRelease \
-              --no-daemon --stacktrace \
-              --max-workers=2 --refresh-dependencies; then
-              exit 0
-            fi
-
-            if [ "$attempt" -lt 3 ]; then
-              sleep 12
-            fi
-          done
-
-          echo "::error::Release APK build failed after 3 attempts."
-          exit 1
-
-      - name: Verify APK and calculate SHA-256
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SOURCE="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
-
-          if [ ! -s "$SOURCE" ]; then
-            echo "::error::APK output not found."
-            find "$PROJECT_DIR/app/build/outputs" \
-              -type f -name '*.apk' -print || true
-            exit 1
-          fi
-
-          cp "$SOURCE" "$APK_NAME"
-
-          APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
-
-          if [ ! -x "$APKSIGNER" ]; then
-            echo "::error::apksigner not found."
-            exit 1
-          fi
-
-          "$APKSIGNER" verify --verbose "$APK_NAME"
+          SRC="$PROJECT_DIR/app/build/outputs/apk/release/app-release.apk"
+          test -s "$SRC"
+          cp "$SRC" "$APK_NAME"
           sha256sum "$APK_NAME" | tee apk-sha256.txt
+          APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
+          if [ -x "$APKSIGNER" ]; then "$APKSIGNER" verify --verbose "$APK_NAME"; fi
 
-          echo "Signing mode: $SIGNING_MODE"
-
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: KayrootEngine-v2.4-apk
           path: |
             KayrootEngine-v2.4*.apk
             apk-sha256.txt
           if-no-files-found: error
-          retention-days: 14
 
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: startsWith(github.ref, 'refs/tags/v') && env.SIGNING_MODE == 'release'
         uses: softprops/action-gh-release@v2
         with:
           files: |
